@@ -1,6 +1,9 @@
-
 from amplpy import modules
-modules.load()
+try:
+    modules.load()
+except Exception:
+    modules.install(["highs"])
+    modules.load()
 
 import streamlit as st
 from amplpy import AMPL
