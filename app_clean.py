@@ -1,12 +1,5 @@
-from amplpy import modules
-try:
-    modules.load()
-except Exception:
-    modules.install(["highs"])
-    modules.load()
-
 import streamlit as st
-from amplpy import AMPL
+import pulp
 import pandas as pd
 import plotly.express as px
 
@@ -145,7 +138,7 @@ with st.sidebar:
     max_projects = st.number_input("Maximum number of projects", min_value=1, max_value=20, value=5, step=1)
     st.markdown("---")
     st.markdown("**Model Type:** 0-1 Integer Program")
-    st.markdown("**Solver:** HiGHS via AMPL")
+    st.markdown("**Solver:** CBC via PuLP")
     st.markdown("---")
     st.markdown("**Constraints:**")
     st.markdown("- Total hours <= capacity")
@@ -230,35 +223,27 @@ with tab2:
                 revenues = dict(zip(df["Project Name"], df["Revenue ($)"].astype(float)))
                 hours    = dict(zip(df["Project Name"], df["Hours"].astype(float)))
 
-                ampl = AMPL()
-                ampl.eval("""
-                    set J;
-                    param rev{J} >= 0;
-                    param hrs{J} >= 0;
-                    param H    >= 0;
-                    param R    >= 0;
-                    param Nmax >= 0;
-                    var x{J} binary;
-                    maximize TotalRevenue: sum{j in J} rev[j] * x[j];
-                    subject to TimeLimit:    sum{j in J} hrs[j] * x[j] <= H;
-                    subject to MinRevenue:   sum{j in J} rev[j] * x[j] >= R;
-                    subject to ProjectCap:   sum{j in J} x[j] <= Nmax;
-                """)
-                ampl.set['J']       = names
-                ampl.param['rev']   = revenues
-                ampl.param['hrs']   = hours
-                ampl.param['H']     = float(total_hours)
-                ampl.param['R']     = float(min_revenue)
-                ampl.param['Nmax']  = float(max_projects)
-                ampl.option['solver'] = 'highs'
-                ampl.solve()
+                # Build the 0-1 Integer Program with PuLP
+                prob = pulp.LpProblem("FreelanceOptimizer", pulp.LpMaximize)
+                x = {j: pulp.LpVariable(f"x_{i}", cat="Binary") for i, j in enumerate(names)}
 
-                status = ampl.get_value("solve_result")
-                if status != "solved":
+                # Objective: maximize total revenue
+                prob += pulp.lpSum(revenues[j] * x[j] for j in names), "TotalRevenue"
+
+                # Constraints
+                prob += pulp.lpSum(hours[j]    * x[j] for j in names) <= float(total_hours),  "TimeLimit"
+                prob += pulp.lpSum(revenues[j] * x[j] for j in names) >= float(min_revenue),  "MinRevenue"
+                prob += pulp.lpSum(x[j]                for j in names) <= float(max_projects), "ProjectCap"
+
+                # Solve with CBC (bundled with PuLP, no external solver needed)
+                prob.solve(pulp.PULP_CBC_CMD(msg=0))
+                status = pulp.LpStatus[prob.status]
+
+                if status != "Optimal":
                     st.error(f"No feasible solution. Try lowering minimum earnings or increasing available hours. (Status: {status})")
                 else:
-                    result  = ampl.var['x'].to_dict()
-                    obj_val = ampl.obj['TotalRevenue'].value()
+                    result  = {j: x[j].value() for j in names}
+                    obj_val = pulp.value(prob.objective)
 
                     selected     = [j for j in names if result[j] > 0.5]
                     not_selected = [j for j in names if result[j] <= 0.5]
@@ -417,7 +402,7 @@ $$x_j \in \{0,1\} \quad \forall j \in J$$
 
 **Model Type:** 0-1 Integer Program (IP). Projects cannot be partially accepted, fractional values have no real-world meaning. This makes IP the correct model, not LP.
 
-**Solver:** HiGHS via AMPL (amplpy)
+**Solver:** CBC via PuLP
 
 | Symbol | Meaning |
 |--------|---------|
